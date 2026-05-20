@@ -1,0 +1,85 @@
+version: "3.9"
+
+# ── Shared environment ─────────────────────────────────────────────────────
+x-env: &common-env
+  QUEUE_BACKEND: redis
+  REDIS_URL: redis://redis:6379
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: "true"
+  BATCH_INTERVAL_MS: "100"
+  BATCH_MAX_SIZE: "8"
+  ENABLE_PLANNER: ${ENABLE_PLANNER:-false}
+
+services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── API Server ───────────────────────────────────────────────────────────
+  # Handles HTTP requests + runs all agents in-process (monolith mode).
+  # For scaled deployments, set AGENTS_IN_PROCESS=false and run worker services.
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Optional: Standalone Retriever Workers ────────────────────────────────
+  # Uncomment to run agents as separate scalable processes (with Redis queue).
+  # worker-retriever:
+  #   build: .
+  #   command: ["python", "scripts/run_worker.py", "--agent", "retriever", "--queue", "redis"]
+  #   environment:
+  #     <<: *common-env
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   deploy:
+  #     replicas: 2    # scale independently based on queue depth
+
+  # worker-analyzer:
+  #   build: .
+  #   command: ["python", "scripts/run_worker.py", "--agent", "analyzer", "--queue", "redis"]
+  #   environment:
+  #     <<: *common-env
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+  # worker-writer:
+  #   build: .
+  #   command: ["python", "scripts/run_worker.py", "--agent", "writer", "--queue", "redis"]
+  #   environment:
+  #     <<: *common-env
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+volumes:
+  redis_data:
